@@ -1,4 +1,4 @@
-module TestLib (Config(..), mainWith) where
+module TestLib (Config(..), mainWith, mainWithOpts, main, Options(..)) where
 
 import SimpleGetOpt
 import Control.Monad (foldM,when)
@@ -6,7 +6,7 @@ import System.Directory ( getDirectoryContents,doesDirectoryExist
                         , createDirectoryIfMissing,canonicalizePath )
 import System.Environment (withArgs)
 import System.FilePath((</>),(<.>),splitFileName,splitDirectories,takeFileName
-                      , isRelative, pathSeparator )
+                      , isRelative, pathSeparator, takeExtension )
 import System.Process ( createProcess,CreateProcess(..), StdStream(..)
                       , proc, waitForProcess, readProcessWithExitCode
                        )
@@ -34,14 +34,25 @@ data Config = Config
     -- ^ Examine a file name to determine if it is a test.
   }
 
+main :: IO ()
+main =
+  do opts <- getOpts options
+     mainWithOpts opts
+
 -- | Define a @main@ function for an executable.
 mainWith :: Config -> IO ()
 mainWith cfg =
-  do let optSpec = options cfg
-     opts       <- getOpts optSpec
+  do opts0 <- getOpts options
+     let opts = opts0 { optCfg = Just cfg }
+     mainWithOpts $ case optBinary opts of
+                      "" -> opts { optBinary = cfgDefaultBinary cfg }
+                      _  -> opts
 
-     when (optHelp opts) $
-        do dumpUsage optSpec
+-- | Run with the given options
+mainWithOpts :: Options -> IO ()
+mainWithOpts opts =
+  do when (optHelp opts) $
+        do dumpUsage options
            exitSuccess
 
      -- Normalize paths
@@ -57,6 +68,9 @@ mainWith cfg =
      withArgs (optOther opts') (defaultMain (generateTests opts' testFiles))
 
 
+
+
+
 -- Command Line Options --------------------------------------------------------
 
 data Options = Options
@@ -67,26 +81,35 @@ data Options = Options
   , optTests          :: [FilePath]
   , optDiffTool       :: Maybe String
   , optIgnoreExpected :: Bool
-  , optCfg            :: Config
+  , optTestFileExts   :: [String]
+  , optBinFlags       :: [String]
+    -- ^ Add this flags to the binary, followed by the test file
+  , optCfg            :: Maybe Config
   }
 
 
-options :: Config -> OptSpec Options
-options cfg = OptSpec
-  { progDefaults = Options { optBinary         = cfgDefaultBinary cfg
+options :: OptSpec Options
+options = OptSpec
+  { progDefaults = Options { optBinary         = ""
                            , optOther          = []
                            , optHelp           = False
                            , optResultDir      = "output"
                            , optTests          = []
                            , optDiffTool       = Nothing
+                           , optBinFlags       = []
+                           , optTestFileExts   = []
                            , optIgnoreExpected = False
-                           , optCfg            = cfg
+                           , optCfg            = Nothing
                            }
 
   , progOptions =
       [ Option "c" ["exe"]
         "the binary executable to use"
         $ ReqArg "PATH" $ \s o -> Right o { optBinary = s }
+
+     , Option "F" ["flag"]
+        "add a flag to the test binary"
+        $ ReqArg "STRING" $ \s o -> Right o { optBinFlags = optBinFlags o ++[s]}
 
       , Option "r" ["result-dir"]
         "the result directory for test runs"
@@ -103,6 +126,15 @@ options cfg = OptSpec
       , Option "i" ["ignore-expected"]
         "ignore expected failures"
         $ NoArg $ \o -> Right o { optIgnoreExpected = True }
+
+      , Option "" ["ext"]
+        "files with this extension are tests"
+        $ ReqArg "STRING" $ \s o ->
+            let e = case s of
+                      '.' : _ -> s
+                      _ -> '.' : s
+            in Right o { optTestFileExts = e : optTestFileExts o }
+
 
       , Option "h" ["help"]
         "display this message"
@@ -202,7 +234,9 @@ generateAssertion opts dir file = testCase file runTest
 runBinary :: Options -> Handle -> FilePath -> String -> IO ()
 runBinary opts hout path file =
   do let bin  = optBinary opts
-         args = cfgBinOpts (optCfg opts) file
+         args = case optCfg opts of
+                  Just x -> optBinFlags opts ++ cfgBinOpts x file
+                  Nothing -> optBinFlags opts
      (_, _, _, ph) <- createProcess (proc bin args)
                         { cwd     = Just path
                         , std_out = UseHandle hout
@@ -265,7 +299,13 @@ findTests opts = searchMany noTests (optTests opts)
                      '.' : _ -> True
                      _       -> False
 
-  isTestFile f = cfgIsTestCase (optCfg opts) (takeFileName f)
+  isTestFile f = case optCfg opts of
+                   Nothing -> byExt
+                   Just cfg -> byExt || cfgIsTestCase cfg file
+    where
+    file  = takeFileName f
+    byExt = takeExtension file `elem` optTestFileExts opts
+
 
 
 
