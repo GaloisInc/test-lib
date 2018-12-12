@@ -236,7 +236,7 @@ runBinary opts hout path file =
   do let bin  = optBinary opts
          args = case optCfg opts of
                   Just x -> optBinFlags opts ++ cfgBinOpts x file
-                  Nothing -> optBinFlags opts
+                  Nothing -> optBinFlags opts ++ [file]
      (_, _, _, ph) <- createProcess (proc bin args)
                         { cwd     = Just path
                         , std_out = UseHandle hout
