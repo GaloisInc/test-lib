@@ -3,8 +3,10 @@ module TestLib (Config(..), mainWith, mainWithOpts, main, Options(..)) where
 import SimpleGetOpt
 import Control.Monad (foldM,when)
 import System.Directory ( getDirectoryContents,doesDirectoryExist
+                        , doesFileExist
                         , createDirectoryIfMissing,canonicalizePath )
 import System.Environment (withArgs)
+import System.Info(os)
 import System.FilePath((</>),(<.>),splitFileName,splitDirectories,takeFileName
                       , isRelative, pathSeparator, takeExtension )
 import System.Process ( createProcess,CreateProcess(..), StdStream(..)
@@ -12,6 +14,8 @@ import System.Process ( createProcess,CreateProcess(..), StdStream(..)
                        )
 import System.IO(IOMode(..),withFile,Handle,hSetBuffering,BufferMode(..))
 import System.Exit(exitSuccess)
+import Paths_test_lib (version)
+import Data.Version (showVersion)
 import Test.Framework (defaultMain,Test,testGroup)
 import Test.Framework.Providers.HUnit (testCase)
 import Test.HUnit (assertFailure)
@@ -55,6 +59,10 @@ mainWithOpts opts =
         do dumpUsage options
            exitSuccess
 
+     when (optVersion opts) $
+        do putStrLn (showVersion version)
+           exitSuccess
+
      -- Normalize paths
      bin' <- if pathSeparator `elem` optBinary opts
                      && isRelative (optBinary opts)
@@ -77,6 +85,7 @@ data Options = Options
   { optBinary         :: String
   , optOther          :: [String]
   , optHelp           :: Bool
+  , optVersion        :: Bool
   , optResultDir      :: FilePath
   , optTests          :: [FilePath]
   , optDiffTool       :: Maybe String
@@ -93,6 +102,7 @@ options = OptSpec
   { progDefaults = Options { optBinary         = ""
                            , optOther          = []
                            , optHelp           = False
+                           , optVersion        = False
                            , optResultDir      = "output"
                            , optTests          = []
                            , optDiffTool       = Nothing
@@ -135,6 +145,9 @@ options = OptSpec
                       _ -> '.' : s
             in Right o { optTestFileExts = e : optTestFileExts o }
 
+      , Option "" ["version"]
+        "display current version"
+        $ NoArg $ \o -> Right o { optVersion = True }
 
       , Option "h" ["help"]
         "display this message"
@@ -168,9 +181,17 @@ generateAssertion opts dir file = testCase file runTest
   where
   -- file locations:
   resultDir        = optResultDir opts </> dir        -- test output goes here
-  goldFile         = dir </> file <.> "stdout"        -- what we expect to see
+  goldFiles        = [ dir </> file <.> "stdout" <.> os -- what we expect to see
+                     , dir </> file <.> "stdout"        -- what we expect to see
+                     ]
   knownFailureFile = dir </> file <.> "fails"         -- expected failur
   resultOut        = resultDir </> file <.> "stdout"  -- outputfile
+
+  getGoldFile gfs =
+    case gfs of
+      [] -> error ("Missing gold file for " ++ show (dir </> file))
+      f : fs -> do yes <- doesFileExist f
+                   if yes then pure f else getGoldFile fs
 
   runTest =
     do createDirectoryIfMissing True resultDir
@@ -179,11 +200,12 @@ generateAssertion opts dir file = testCase file runTest
             runBinary opts hout dir file
 
        out      <- readFile resultOut
-       expected <- readFile goldFile
+       gf       <- getGoldFile goldFiles
+       expected <- readFile gf
        mbKnown  <- X.try (readFile knownFailureFile)
-       checkOutput mbKnown expected out
+       checkOutput gf mbKnown expected out
 
-  checkOutput mbKnown expected out
+  checkOutput goldFile mbKnown expected out
     | expected == out =
       case mbKnown of
         Left _  -> return ()
