@@ -1,5 +1,9 @@
 # Revision history for test-lib
 
+## 0.3.1
+
+* Make it work with GHC 9
+
 ## 0.3
 
 * Add --version flag to report current version

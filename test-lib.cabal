@@ -1,5 +1,5 @@
 name:                test-lib
-version:             0.3
+version:             0.4
 synopsis:            A library to make a quick test-runner script.
 description:         This library makes it easy to define an executable,
                      which can find and run a bunch of tests for a binary.
