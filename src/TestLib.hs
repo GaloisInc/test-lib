@@ -1,14 +1,15 @@
 module TestLib (Config(..), mainWith, mainWithOpts, main, Options(..)) where
 
+import Data.Char(isSpace)
 import SimpleGetOpt
 import Control.Monad (foldM,when)
 import System.Directory ( getDirectoryContents,doesDirectoryExist
                         , doesFileExist
                         , createDirectoryIfMissing,canonicalizePath )
-import System.Environment (withArgs)
+import System.Environment (withArgs, getEnvironment)
 import System.Info(os)
 import System.FilePath((</>),(<.>),splitFileName,splitDirectories,takeFileName
-                      , isRelative, pathSeparator, takeExtension )
+                      , isRelative, pathSeparator, takeExtension, replaceExtension )
 import System.Process ( createProcess,CreateProcess(..), StdStream(..)
                       , proc, waitForProcess, readProcessWithExitCode
                        )
@@ -91,6 +92,7 @@ data Options = Options
   , optDiffTool       :: Maybe String
   , optIgnoreExpected :: Bool
   , optTestFileExts   :: [String]
+  , optTestFileEnvExts :: [String]
   , optBinFlags       :: [String]
     -- ^ Add this flags to the binary, followed by the test file
   , optCfg            :: Maybe Config
@@ -108,6 +110,7 @@ options = OptSpec
                            , optDiffTool       = Nothing
                            , optBinFlags       = []
                            , optTestFileExts   = []
+                           , optTestFileEnvExts = []
                            , optIgnoreExpected = False
                            , optCfg            = Nothing
                            }
@@ -144,6 +147,14 @@ options = OptSpec
                       '.' : _ -> s
                       _ -> '.' : s
             in Right o { optTestFileExts = e : optTestFileExts o }
+
+      , Option "" ["env-ext"]
+        "files with this extension set environmental variables"
+        $ ReqArg "STRING" $ \s o ->
+            let e = case s of
+                      '.' : _ -> s
+                      _ -> '.' : s
+            in Right o { optTestFileEnvExts = e : optTestFileEnvExts o }
 
       , Option "" ["version"]
         "display current version"
@@ -257,18 +268,59 @@ runBinary :: Options -> Handle -> FilePath -> String -> IO ()
 runBinary opts hout path file =
   do let bin  = optBinary opts
          args = case optCfg opts of
-                  Just x -> optBinFlags opts ++ cfgBinOpts x file
-                  Nothing -> optBinFlags opts ++ [file]
+                          Just x -> optBinFlags opts ++ cfgBinOpts x file
+                          Nothing -> optBinFlags opts ++ [file]
+     envVars <- getEnvVars path file (optTestFileEnvExts opts)
      (_, _, _, ph) <- createProcess (proc bin args)
                         { cwd     = Just path
                         , std_out = UseHandle hout
                         , std_in  = Inherit
                         , std_err = UseHandle hout
+                        , env     = envVars
                         }
      _ <- waitForProcess ph
      return ()
 
+getEnvVars :: FilePath -> String -> [String] -> IO (Maybe [(String,String)])
+getEnvVars path p es =
+  case es of
+    [] -> pure Nothing
+    e : more ->
+      do mb <- getEnvVarsFrom (path </> replaceExtension p e)
+         case mb of
+           Just ev -> pure (Just ev)
+           Nothing -> getEnvVars path p more
 
+
+-- | Parse the environment variables from a file.
+getEnvVarsFrom :: FilePath -> IO (Maybe [(String,String)])
+getEnvVarsFrom file =
+  do mbTxt <- X.try (readFile file)
+     case mbTxt of
+       Left X.SomeException {} -> pure Nothing
+       Right txt ->
+         case parse txt of
+           Right as ->
+             do es <- getEnvironment
+                let new = map fst as
+                pure (Just (as ++ [ (x,v) | (x,v) <- es, x `notElem` new ]))
+           Left err -> error err 
+  where
+  parse = mapM parseLine . filter (not . isBlank) . zip [1 :: Int .. ] . lines
+
+  isBlank (_, xs) =
+    case dropWhile isSpace xs of
+      [] -> True
+      '#' : _ -> True
+      _ -> False
+
+  trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
+  
+  parseLine (n,l) =
+    case break (== '=') l of
+      (as,_:bs) -> pure (trim as, trim bs)
+      _ -> Left (unlines [ file ++ ":" ++ show n ++
+                                   " Syntax error, expected KEY=VALUE" ])
 
 
 -- Test Discovery --------------------------------------------------------------
@@ -306,7 +358,7 @@ testFile path = foldr addDir baseTest dirs
 findTests :: Options -> IO TestFiles
 findTests opts = searchMany noTests (optTests opts)
   where
-  searchMany tests = foldM step tests
+  searchMany = foldM step
 
   step tests path =
     do isDir <- doesDirectoryExist path
